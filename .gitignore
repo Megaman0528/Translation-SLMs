@@ -1,0 +1,5 @@
+outputs/
+*.safetensors
+*.bin
+*.pth
+*.gguf

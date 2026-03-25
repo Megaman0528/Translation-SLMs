@@ -1,0 +1,109 @@
+Spanish; English
+Buenos días.; Good morning. 
+Buenas tardes.; Good afternoon. 
+Buenas noches.; Good night.
+Hola.; Hello.
+¿Cómo estás?; How are you?
+Bien, gracias. ¿Y tú?; Fine, thank you. And you?
+¿Qué pasa?; What’s up?
+ ¿Qué tal?; What’s up?
+¿Qué haces?; What are you doing? 
+¿Cómo te va?; How is it going? 
+Muy bien.; Very well. 
+Todo bien.; All good.
+Más o menos.; So-so.
+Así, así.; So-so. 
+No muy bien.; Not so good.
+¡Adiós!; Goodbye!
+Hasta mañana.; See you tomorrow.
+Hasta luego.; See you later. 
+Hasta pronto.; See you soon. 
+Nos vemos.; See you.
+Gracias.; Thank you.
+Por favor.; Please. 
+De nada.; You’re welcome. 
+Lo siento.; I’m sorry. 
+Perdón.; I’m sorry.
+Disculpe.; Excuse me.
+Con permiso.; Excuse me. 
+¡Salud!; Cheers!
+Buen provecho.; Enjoy your meal. 
+¡Buena suerte!; Good luck!
+Cuídate.; Take care.
+¿Cómo te llamas?; What’s your name? 
+¿Cuál es tu nombre?; What’s your name? 
+Me llamo Michael.; My name is Michael. 
+Mucho gusto.; Nice to meet you. 
+Un placer.; A pleasure. 
+El placer es mío.; My pleasure. 
+Encantado/Encantada; Charmed
+¿De dónde eres?; Where are you from?
+Soy de los Estados Unidos.; I’m from the United States.
+¿Qué edad tienes?; How old are you?
+¿Cuántos años tienes?; How old are you? 
+¿Cuándo es tu cumpleaños?; When is your birthday?
+¿A qué te dedicas?; What do you do for work?
+Soy astronauta.; I’m an astronaut.
+¿En qué trabajas?; What’s your job?
+Trabajo en NASA; I work at NASA
+¿Qué te gusta hacer?; What do you like to do?
+Me gusta leer.; I like to read
+Me encanta comer.; I love to eat.
+¿Qué haces en tu tiempo libre?; What do you do in your free time?
+¿Cuáles son tus pasatiempos?; What are your hobbies? 
+¿Cuál es tu banda favorita?; What’s your favorite band?
+Mi (libro, película, banda) favorito(a) es…; My favorite (book, movie, band) is…
+¿Qué haces aquí?; What are you doing here? 
+¿Quién eres?; Who are you? 
+¿Cuánto cuesta?; How much is it?
+¿Dónde está el baño?; Where is the bathroom? 
+¿Quieres tomar algo?; Do you want to have a drink? 
+¿Qué hora es?; What time is it? 
+¿Qué día es hoy?; What’s the date today?
+¿Habla inglés?; Do you speak English?
+¿Puedo pasar?; May I come in? 
+¿Pasa algo malo?; Is something wrong?
+¡Feliz cumpleaños!; Happy birthday!
+¡Feliz navidad!; Merry Christmas!
+¡Feliz año nuevo!; Happy new year!
+¡Felicidades!; Congratulations!
+¡Enhorabuena!; Congratulations!
+¡Salud!; Bless you! 
+¡Bienvenida!; Welcome!
+¡Buen viaje!; Have a good trip!
+¡Cuánto tiempo sin verte!; Long time no see!
+¡Bien hecho!; Well done!
+¡Diviértete!; Have fun!
+¡Que te diviertas!; Have fun!
+No te preocupes.; Don’t worry.
+Lamento interrumpir.; I’m sorry to interrupt. 
+Es una lástima.; That’s a shame. 
+No sé. / No lo sé.; I don’t know. 
+No hay problema.; No problem. 
+Necesito ayuda.; I need help. 
+Necesito ir a…; I need to go to… 
+¡Dios mío!; Oh my god!
+¿Lo entiendes?; Do you understand? 
+No entiendo. / No lo entiendo.; I don’t understand. 
+Me voy a casa.; I’m going home. 
+¿Cómo llego a…?; How do I get to…? 
+No tengo idea.; I have no idea. 
+¿Me puede traer (la carta, una bebida, etc.)?; Can you bring me a (menu, drink, etc.)?
+La cuenta por favor.; Check, please. 
+¿Puede hablar más despacio?; Can you speak slowly, please? 
+¿Cómo se dice…?; How do you say…? 
+¿Qué es esto?; What is this?
+¿Verdad (que sí)?; Right? 
+Estoy de acuerdo.; I agree. 
+Por supuesto.; Of course. 
+Llámame cuando llegues.; Call me when you get there. 
+¿Estás listo?; Are you ready?
+Te amo.; I love you.
+Te quiero.; I love you.
+Todo está bien.; It’s all right. 
+Tengo hambre.; I’m hungry.
+Tengo sed.; I’m thirsty. 
+Una mesa para dos, por favor.; A table for two, please. 
+¿Tiene…?; Do you have…? 
+Me gustaría…; I would like to…
+Quisiera…; I would like to…
