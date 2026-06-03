@@ -1,6 +1,6 @@
 """
-2026.3.2
-2026.3.4
+2026.5.5
+2026.5.10
 4.57.6
 0.24.0
 __UNSLOTH_VERSIONING__
@@ -28,7 +28,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from unsloth_zoo.temporary_patches.common import torch_compile
 from typing import Any, List, Optional, Tuple, Union, Dict, Set, Callable
-from trl.trainer.online_dpo_trainer import (Any, AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer, BasePairwiseJudge, BaseTrainer, Callable, DPODataCollatorWithPadding, DataCollator, DataLoader, Dataset, EvalPrediction, F, FSDP, GenerationConfig, IterableDataset, MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES, OnlineDPOConfig, OnlineDPOTrainer, OptimizerNames, Optional, Path, PeftConfig, PreTrainedModel, PreTrainedTokenizerBase, ProcessorMixin, RewardFunc, SIMPLE_CHAT_TEMPLATE, Trainer, TrainerCallback, Union, VLLMClient, apply_chat_template, broadcast_object_list, create_reference_model, disable_dropout_in_model, empty_cache, ensure_master_addr_port, gather_object, is_conversational, is_flash_attn_2_available, is_peft_model, is_vllm_available, jinja2, logger, logging, maybe_apply_chat_template, nn, nullcontext, os, pad, prepare_deepspeed, prepare_fsdp, profiling_context, re, seed_worker, textwrap, torch, truncate_right, unwrap_model_for_generation, version, warnings, wraps, AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer, BasePairwiseJudge, Callable, DPODataCollatorWithPadding, DataCollator, Dataset, EvalPrediction, F, GenerationConfig, IterableDataset, MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES, OnlineDPOConfig, Optional, PeftConfig, PreTrainedModel, PreTrainedTokenizerBase, ProcessorMixin, RewardFunc, Trainer, TrainerCallback, Union, VLLMClient, create_reference_model, disable_dropout_in_model, ensure_master_addr_port, is_vllm_available, logger, nn, os, pad, prepare_deepspeed, prepare_fsdp, re, torch, version, warnings, F, apply_chat_template, is_conversational, re, F, FSDP, is_peft_model, nn, nullcontext, os, re, version, F, Optional, PreTrainedModel, Trainer, logger, os, re, torch, F, FSDP, nn, os, re, F, FSDP, nn, re, torch)
+from trl.trainer.online_dpo_trainer import (Any, AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer, BasePairwiseJudge, BaseTrainer, Callable, DPODataCollatorWithPadding, DataCollator, DataLoader, Dataset, EvalPrediction, F, FSDP, GenerationConfig, IterableDataset, MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES, OnlineDPOConfig, OnlineDPOTrainer, OptimizerNames, Optional, Path, PeftConfig, PreTrainedModel, PreTrainedTokenizerBase, ProcessorMixin, RewardFunc, SIMPLE_CHAT_TEMPLATE, Trainer, TrainerCallback, Union, apply_chat_template, broadcast_object_list, create_reference_model, disable_dropout_in_model, empty_cache, gather_object, is_conversational, is_flash_attn_2_available, is_peft_model, jinja2, logger, logging, maybe_apply_chat_template, nn, nullcontext, os, pad, prepare_deepspeed, prepare_fsdp, profiling_context, re, seed_worker, textwrap, torch, truncate_right, unwrap_model_for_generation, version, warnings, wraps, AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer, BasePairwiseJudge, Callable, DPODataCollatorWithPadding, DataCollator, Dataset, EvalPrediction, F, GenerationConfig, IterableDataset, MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES, OnlineDPOConfig, Optional, PeftConfig, PreTrainedModel, PreTrainedTokenizerBase, ProcessorMixin, RewardFunc, Trainer, TrainerCallback, Union, create_reference_model, disable_dropout_in_model, logger, nn, os, pad, prepare_deepspeed, prepare_fsdp, re, torch, version, warnings, F, apply_chat_template, is_conversational, re, F, FSDP, is_peft_model, nn, nullcontext, os, re, version, F, Optional, PreTrainedModel, Trainer, logger, os, re, torch, F, FSDP, nn, os, re, F, FSDP, nn, re, torch)
 
 
 import os
@@ -47,7 +47,6 @@ from transformers.training_args import ParallelMode
 from unsloth_zoo.device_type import DEVICE_TYPE, device_synchronize
 
 # Wrap trainer with padding to right and enable training mode
-# Also patches W&B since multiple runs must use wandb.finish()
 import functools
 from types import MethodType
 try:
@@ -57,6 +56,23 @@ except:
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
+        # Finish the previous W&B run if this is a subsequent train() call.
+        # We do this at the START of train() (not the end) so that
+        # evaluate() / log() still work after train() completes.
+        # HF's WandbCallback.setup() will call wandb.init() for the new run.
+        # See: https://github.com/unslothai/unsloth/issues/3954
+        if getattr(self, '_unsloth_training_completed', False):
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.finish()
+                    # Reset HF's WandbCallback so it calls wandb.init() for the new run
+                    for cb in self.callback_handler.callbacks:
+                        if type(cb).__name__ == 'WandbCallback':
+                            cb._initialized = False
+                            break
+            except:
+                pass
         # Enable training mode
         _was_training = None
         # Get gradient checkpointing setting from training arguments
@@ -77,12 +93,9 @@ def prepare_for_training_mode(f):
             reset_unsloth_gradient_checkpointing_buffers()
         except:
             pass
-        # Patch W&B to enable logging on future runs, otherwise it'll overwrite the first run
-        try:
-            import wandb
-            wandb.finish()
-        except:
-            pass
+        # Mark that training completed so the next train() call can
+        # finish this W&B run before starting a new one
+        self._unsloth_training_completed = True
         return output
     return wrapper
 pass
@@ -123,7 +136,7 @@ def chunked_hidden_states_selective_log_softmax(
         if logit_scale_divide != 0.0:
             chunk_logits = chunk_logits / logit_scale_divide
         if logit_softcapping != 0.0:
-            chunk_logits = chunk_logits * torch.tanh(chunk_logits / logit_softcapping)
+            chunk_logits = logit_softcapping * torch.tanh(chunk_logits / logit_softcapping)
 
         chunk_logits = chunk_logits.to(torch.float32)
 
@@ -141,14 +154,20 @@ def chunked_hidden_states_selective_log_softmax(
     return all_per_token_logps
 
 @torch.compile(dynamic = True, fullgraph = True, options = torch_compile_options,)
-def chunked_selective_log_softmax(logits, index):
-    # Split into 4 chunks only
-    chunked_logits = torch.chunk(logits.reshape(-1, logits.shape[-1]), chunks = 4, dim = 0)
-    chunked_index  = torch.chunk(index.reshape(-1), chunks = 4, dim = 0)
+def chunked_selective_log_softmax(
+    logits,
+    index,
+    temperature: float = 1.0,
+    chunks: int = 4,
+):
+    chunked_logits = torch.chunk(logits.reshape(-1, logits.shape[-1]), chunks = chunks, dim = 0)
+    chunked_index  = torch.chunk(index.reshape(-1), chunks = chunks, dim = 0)
     all_per_token_logps = []
     # Below loop does the same as selective_log_softmax(chunk_logits, chunk_index)
     for chunk_logits, chunk_index in zip(chunked_logits, chunked_index):
         chunk_logits = chunk_logits.to(torch.float32)
+        if temperature != 1.0:
+            chunk_logits = chunk_logits / temperature
         selected_logits = torch.gather(chunk_logits, dim = -1, index = chunk_index.unsqueeze(-1)).squeeze(-1)
         logsumexp_values = torch.logsumexp(chunk_logits, dim = -1)
         per_token_logps = selected_logits - logsumexp_values
@@ -260,6 +279,29 @@ def align_logprobs_with_mask(
     padded_logprobs[valid_rows, valid_cols] = valid_vals
 
     return padded_logprobs
+
+def align_completion_tool_mask(
+    tool_mask: torch.Tensor,
+    completion_mask: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Aligns a raw completion-length tool/env mask with Unsloth's repacked loss mask.
+    """
+    if tool_mask is None:
+        return completion_mask
+    if tool_mask.shape[0] != completion_mask.shape[0]:
+        raise ValueError("tool_mask batch size must match completion_mask batch size.")
+
+    tool_mask = tool_mask.to(device=completion_mask.device)
+    if tool_mask.shape == completion_mask.shape:
+        aligned_tool_mask = tool_mask
+    else:
+        aligned_tool_mask = align_logprobs_with_mask(
+            tool_mask,
+            completion_mask,
+            pad_value=0,
+        )
+    return completion_mask * aligned_tool_mask.to(dtype=completion_mask.dtype)
 
 def autotune_batch_and_chunks(
     total_input_rows,
@@ -502,7 +544,7 @@ Parameters:
         eval_delay = 0,
         torch_empty_cache_steps = 250,
         learning_rate = 5e-05,
-        weight_decay = 0.01,
+        weight_decay = 0.001,
         adam_beta1 = 0.9,
         adam_beta2 = 0.999,
         adam_epsilon = 1e-08,
@@ -649,8 +691,8 @@ Parameters:
         gpu_memory_utilization = None,
         vllm_sampling_params = None,
         unsloth_num_chunks = -1,
-        unsloth_logit_chunk_multiplier = None, 
-        unsloth_grpo_mini_batch = None, 
+        unsloth_logit_chunk_multiplier = None,
+        unsloth_grpo_mini_batch = None,
         max_seq_length = None,
         **kwargs,
     ):
@@ -662,14 +704,15 @@ Parameters:
             output_dir = 'unsloth_training_checkpoints'
             save_strategy = 'no'
         import multiprocessing as _mp
-        if _mp.get_start_method() != 'fork':
-            dataset_num_proc = None
-        elif dataset_num_proc is None:
-            import psutil
-            dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)
-            memory_gb_left = psutil.virtual_memory().available / (1024**3)
-            if memory_gb_left <= 2: dataset_num_proc = 1
-            else: dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))
+        if dataset_num_proc is None:
+            if _mp.get_start_method() != 'fork':
+                dataset_num_proc = None
+            else:
+                import psutil
+                dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)
+                memory_gb_left = psutil.virtual_memory().available / (1024**3)
+                if memory_gb_left <= 2: dataset_num_proc = 1
+                else: dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))
         if temperature <= 0:
             raise ValueError('Unsloth: Please set a positive non-zero temperature since your results will be wrong.')
         elif temperature >= 10:
@@ -1251,60 +1294,10 @@ class _UnslothOnlineDPOTrainer(BaseTrainer):
 
         # Set up generation configuration and vLLM after super[].__init__
         if self.use_vllm:
-            if not is_vllm_available():
-                raise ImportError(
-                    "vLLM is not available and `use_vllm` is set to True. Please install vLLM with "
-                    "`pip install trl[vllm]` to use it."
-                )
-
-            if self.vllm_mode == "server":
-                if self.accelerator.is_main_process:
-                    if args.vllm_server_base_url is not None:
-                        base_url = args.vllm_server_base_url
-                    else:
-                        base_url = f"http://{args.vllm_server_host}:{args.vllm_server_port}"
-                    self.vllm_client = VLLMClient(base_url=base_url, connection_timeout=args.vllm_server_timeout)
-                    self.vllm_client.init_communicator(device=torch.cuda.current_device())
-                else:
-                    self.vllm_client = None
-            elif self.vllm_mode == "colocate":
-                vllm_kwargs = {
-                    "model": model.name_or_path,
-                    "tensor_parallel_size": self.vllm_tensor_parallel_size,
-                    "gpu_memory_utilization": self.vllm_gpu_memory_utilization,
-                    "model_impl": self.vllm_model_impl,
-                    "max_num_seqs": self.args.per_device_train_batch_size * self.vllm_tensor_parallel_size,
-                    "max_model_len": args.max_length + args.max_new_tokens,
-                    "distributed_executor_backend": "external_launcher",
-                    "seed": self.accelerator.process_index // self.vllm_tensor_parallel_size,
-                    "max_num_batched_tokens": 4096,
-                }
-                os.environ["RANK"] = str(self.accelerator.process_index)
-                os.environ["LOCAL_RANK"] = str(self.accelerator.local_process_index)
-                os.environ["WORLD_SIZE"] = str(self.accelerator.num_processes)
-                ensure_master_addr_port()
-
-                self.llm = model.vllm_engine
-            else:
-                raise ValueError(f"vllm_mode must be either 'server' or 'colocate', got '{self.vllm_mode}'.")
-            self.guided_decoding_regex = args.vllm_guided_decoding_regex
-            self._last_loaded_step = -1
-            generation_params = {
-                "n": 2,
-                "repetition_penalty": self.repetition_penalty,
-                "temperature": self.temperature,
-                "top_p": self.top_p,
-                "top_k": -1 if self.top_k is None else self.top_k,
-                "min_p": 0.0 if self.min_p is None else self.min_p,
-                "max_tokens": args.max_new_tokens,
-                "detokenize": False,
-            }
-            if args.generation_kwargs is not None:
-                generation_params.update(args.generation_kwargs)
-            if self.guided_decoding_regex:
-                generation_params["guided_decoding"] = GuidedDecodingParams(regex=self.guided_decoding_regex)
-            self.generation_config = SamplingParams(**generation_params)
-            self.accelerator.wait_for_everyone()
+            if getattr(getattr(model, 'vllm_engine', None), 'shared_weights', False): self.llm = model.vllm_engine; self._last_loaded_step = 0
+            self.generation_config = SamplingParams(**generation_params,
+            **getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams()), '_set_kwargs', {}),
+            )
         else:
             # Set up transformers generation config
             generation_kwargs = {
@@ -1591,7 +1584,7 @@ class _UnslothOnlineDPOTrainer(BaseTrainer):
         else:
             vllm_inputs = prompts_text
 
-        outputs = self.llm.generate(vllm_inputs, self.generation_config, use_tqdm=False, lora_request = self.model.load_lora('online_dpo_trainer_lora_model', load_tensors = True))
+        outputs = self.llm.generate(vllm_inputs, self.generation_config, use_tqdm=False, lora_request = self.model.load_lora('online_dpo_trainer_lora_model', load_tensors = True) if getattr(self.llm, 'shared_weights', False) else None)
 
         completion_ids = [list(output.outputs[i].token_ids) for i in range(2) for output in outputs]
         prompt_ids = [list(output.prompt_token_ids) for _ in range(2) for output in outputs]
@@ -2482,7 +2475,7 @@ Args:
                         __tokenizer.tokenizer,
                         pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),
                     )
-                else:
+                elif isinstance(data_collator, TransformersDataCollatorForLanguageModeling):
                     data_collator = TransformersDataCollatorForLanguageModeling(
                         __tokenizer.tokenizer,
                         mlm = False,

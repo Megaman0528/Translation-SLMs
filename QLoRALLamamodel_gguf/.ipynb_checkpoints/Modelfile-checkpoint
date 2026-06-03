@@ -1,0 +1,7 @@
+
+FROM llama-2-7b-chat.Q4_K_M.gguf
+TEMPLATE "{{ .Prompt }}"
+
+PARAMETER stop "English:"
+PARAMETER stop "Spanish:"
+PARAMETER temperature 0

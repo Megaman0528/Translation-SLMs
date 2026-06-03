@@ -1,6 +1,6 @@
 """
-2026.3.2
-2026.3.4
+2026.5.5
+2026.5.10
 4.57.6
 0.24.0
 __UNSLOTH_VERSIONING__
@@ -28,7 +28,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from unsloth_zoo.temporary_patches.common import torch_compile
 from typing import Any, List, Optional, Tuple, Union, Dict, Set, Callable
-from trl.trainer.grpo_trainer import (Any, AutoConfig, AutoModelForSequenceClassification, AutoProcessor, AutoTokenizer, BaseTrainer, DataLoader, Dataset, FSDP, GRPOConfig, GRPOTrainer, GenerationConfig, IterableDataset, Optional, Path, PeftConfig, PreTrainedModel, PreTrainedTokenizerBase, ProcessorMixin, RepeatSampler, RewardFunc, Sampler, SyncRefModelCallback, TrainerCallback, Union, VLLMClient, _ForwardRedirection, apply_chat_template, broadcast_object_list, datasets, defaultdict, deque, disable_dropout_in_model, ensure_master_addr_port, gather, gather_object, identity, inspect, is_conversational, is_datasets_available, is_flash_attn_2_available, is_liger_kernel_available, is_peft_model, is_rich_available, is_vllm_available, logger, logging, maybe_apply_chat_template, nanmax, nanmin, nanstd, nn, nullcontext, os, pad, partial, prepare_deepspeed, prepare_fsdp, prepare_multimodal_messages, print_prompt_completions_sample, profiling_context, profiling_decorator, seed_worker, selective_log_softmax, set_seed, shuffle_sequence_dict, split_pixel_values_by_grid, split_tensor_dict, textwrap, torch, transformers, unsplit_pixel_values_by_grid, unwrap_model_for_generation, AutoConfig, AutoModelForSequenceClassification, AutoProcessor, AutoTokenizer, Dataset, GRPOConfig, GRPOTrainer, GenerationConfig, IterableDataset, Optional, PeftConfig, PreTrainedModel, PreTrainedTokenizerBase, ProcessorMixin, RewardFunc, SyncRefModelCallback, TrainerCallback, Union, VLLMClient, datasets, defaultdict, deque, disable_dropout_in_model, ensure_master_addr_port, identity, inspect, is_liger_kernel_available, is_peft_model, is_vllm_available, logger, nn, os, pad, prepare_deepspeed, prepare_fsdp, set_seed, torch, transformers, Any, Union, gather, gather_object, is_conversational, logging, nanmax, nanmin, nanstd, os, pad, torch, FSDP, Optional, apply_chat_template, broadcast_object_list, gather, gather_object, is_flash_attn_2_available, maybe_apply_chat_template, nullcontext, os, pad, prepare_multimodal_messages, profiling_context, torch, transformers, unwrap_model_for_generation, os, pad, selective_log_softmax, torch, transformers, Any, Union, profiling_decorator, shuffle_sequence_dict, split_pixel_values_by_grid, split_tensor_dict, torch, unsplit_pixel_values_by_grid, Optional, PreTrainedModel, logger, os, torch, FSDP, nn, os, FSDP, nn, torch, GRPOTrainer, gather, nanmax, nanmin, os, pad, torch)
+from trl.trainer.grpo_trainer import (Any, AutoConfig, AutoModelForSequenceClassification, AutoProcessor, AutoTokenizer, BaseTrainer, DataLoader, Dataset, FSDP, GRPOConfig, GRPOTrainer, GenerationConfig, IterableDataset, Optional, Path, PeftConfig, PreTrainedModel, PreTrainedTokenizerBase, ProcessorMixin, RepeatSampler, RewardFunc, Sampler, SyncRefModelCallback, TrainerCallback, Union, VLLMClient, _ForwardRedirection, apply_chat_template, broadcast_object_list, datasets, defaultdict, deque, disable_dropout_in_model, ensure_master_addr_port, gather, gather_object, identity, inspect, is_conversational, is_datasets_available, is_flash_attn_2_available, is_liger_kernel_available, is_peft_model, is_rich_available, is_vllm_available, logger, logging, maybe_apply_chat_template, nanmax, nanmin, nanstd, nn, nullcontext, os, pad, partial, prepare_deepspeed, prepare_fsdp, prepare_multimodal_messages, print_prompt_completions_sample, profiling_context, profiling_decorator, seed_worker, selective_log_softmax, set_seed, shuffle_sequence_dict, split_pixel_values_by_grid, split_tensor_dict, textwrap, torch, transformers, unsplit_pixel_values_by_grid, unwrap_model_for_generation, AutoConfig, AutoModelForSequenceClassification, AutoProcessor, AutoTokenizer, Dataset, GRPOConfig, GRPOTrainer, GenerationConfig, IterableDataset, Optional, PeftConfig, PreTrainedModel, PreTrainedTokenizerBase, ProcessorMixin, RewardFunc, SyncRefModelCallback, TrainerCallback, Union, VLLMClient, datasets, defaultdict, deque, disable_dropout_in_model, ensure_master_addr_port, identity, inspect, is_liger_kernel_available, is_peft_model, is_vllm_available, logger, nn, os, pad, prepare_deepspeed, prepare_fsdp, set_seed, torch, transformers, Any, Union, gather, gather_object, is_conversational, logging, nanmax, nanmin, nanstd, os, pad, torch, FSDP, Optional, apply_chat_template, broadcast_object_list, gather, gather_object, is_flash_attn_2_available, maybe_apply_chat_template, nullcontext, os, pad, prepare_multimodal_messages, profiling_context, torch, transformers, unwrap_model_for_generation, os, pad, selective_log_softmax, torch, transformers, Any, Union, profiling_decorator, shuffle_sequence_dict, split_pixel_values_by_grid, split_tensor_dict, torch, unsplit_pixel_values_by_grid, Optional, PreTrainedModel, logger, os, torch, FSDP, nn, os, FSDP, nn, torch, GRPOTrainer, gather, inspect, nanmax, nanmin, os, pad, torch)
 
 
 import os
@@ -47,7 +47,6 @@ from transformers.training_args import ParallelMode
 from unsloth_zoo.device_type import DEVICE_TYPE, device_synchronize
 
 # Wrap trainer with padding to right and enable training mode
-# Also patches W&B since multiple runs must use wandb.finish()
 import functools
 from types import MethodType
 try:
@@ -57,6 +56,23 @@ except:
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
+        # Finish the previous W&B run if this is a subsequent train() call.
+        # We do this at the START of train() (not the end) so that
+        # evaluate() / log() still work after train() completes.
+        # HF's WandbCallback.setup() will call wandb.init() for the new run.
+        # See: https://github.com/unslothai/unsloth/issues/3954
+        if getattr(self, '_unsloth_training_completed', False):
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.finish()
+                    # Reset HF's WandbCallback so it calls wandb.init() for the new run
+                    for cb in self.callback_handler.callbacks:
+                        if type(cb).__name__ == 'WandbCallback':
+                            cb._initialized = False
+                            break
+            except:
+                pass
         # Enable training mode
         _was_training = None
         # Get gradient checkpointing setting from training arguments
@@ -77,12 +93,9 @@ def prepare_for_training_mode(f):
             reset_unsloth_gradient_checkpointing_buffers()
         except:
             pass
-        # Patch W&B to enable logging on future runs, otherwise it'll overwrite the first run
-        try:
-            import wandb
-            wandb.finish()
-        except:
-            pass
+        # Mark that training completed so the next train() call can
+        # finish this W&B run before starting a new one
+        self._unsloth_training_completed = True
         return output
     return wrapper
 pass
@@ -127,7 +140,7 @@ def chunked_hidden_states_selective_log_softmax(
         if logit_scale_divide != 0.0:
             chunk_logits = chunk_logits / logit_scale_divide
         if logit_softcapping != 0.0:
-            chunk_logits = chunk_logits * torch.tanh(chunk_logits / logit_softcapping)
+            chunk_logits = logit_softcapping * torch.tanh(chunk_logits / logit_softcapping)
 
         chunk_logits = chunk_logits.to(torch.float32)
 
@@ -145,14 +158,20 @@ def chunked_hidden_states_selective_log_softmax(
     return all_per_token_logps
 
 @torch.compile(dynamic = True, fullgraph = True, options = torch_compile_options,)
-def chunked_selective_log_softmax(logits, index):
-    # Split into 4 chunks only
-    chunked_logits = torch.chunk(logits.reshape(-1, logits.shape[-1]), chunks = 4, dim = 0)
-    chunked_index  = torch.chunk(index.reshape(-1), chunks = 4, dim = 0)
+def chunked_selective_log_softmax(
+    logits,
+    index,
+    temperature: float = 1.0,
+    chunks: int = 4,
+):
+    chunked_logits = torch.chunk(logits.reshape(-1, logits.shape[-1]), chunks = chunks, dim = 0)
+    chunked_index  = torch.chunk(index.reshape(-1), chunks = chunks, dim = 0)
     all_per_token_logps = []
     # Below loop does the same as selective_log_softmax(chunk_logits, chunk_index)
     for chunk_logits, chunk_index in zip(chunked_logits, chunked_index):
         chunk_logits = chunk_logits.to(torch.float32)
+        if temperature != 1.0:
+            chunk_logits = chunk_logits / temperature
         selected_logits = torch.gather(chunk_logits, dim = -1, index = chunk_index.unsqueeze(-1)).squeeze(-1)
         logsumexp_values = torch.logsumexp(chunk_logits, dim = -1)
         per_token_logps = selected_logits - logsumexp_values
@@ -265,6 +284,29 @@ def align_logprobs_with_mask(
 
     return padded_logprobs
 
+def align_completion_tool_mask(
+    tool_mask: torch.Tensor,
+    completion_mask: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Aligns a raw completion-length tool/env mask with Unsloth's repacked loss mask.
+    """
+    if tool_mask is None:
+        return completion_mask
+    if tool_mask.shape[0] != completion_mask.shape[0]:
+        raise ValueError("tool_mask batch size must match completion_mask batch size.")
+
+    tool_mask = tool_mask.to(device=completion_mask.device)
+    if tool_mask.shape == completion_mask.shape:
+        aligned_tool_mask = tool_mask
+    else:
+        aligned_tool_mask = align_logprobs_with_mask(
+            tool_mask,
+            completion_mask,
+            pad_value=0,
+        )
+    return completion_mask * aligned_tool_mask.to(dtype=completion_mask.dtype)
+
 def autotune_batch_and_chunks(
     total_input_rows,
     seq_len,
@@ -324,6 +366,87 @@ def sanitize_logprob(logprob):
         )
         return None
     return value
+def _unsloth_get_final_logit_softcapping(config):
+    """Return final_logit_softcapping for a model config, falling back to the
+    nested text sub-config for composite models. Handles both:
+      - Gemma-4-style configs where the attribute lives on ``config.text_config``
+      - T5Gemma-style composite configs where the text sub-config is only
+        reachable via ``config.get_text_config()``
+    Returns 0 if unset, matching the previous behaviour.
+    """
+    softcap = getattr(config, "final_logit_softcapping", None)
+    if softcap is None:
+        text_cfg = getattr(config, "text_config", None)
+        if text_cfg is None:
+            get_text_config = getattr(config, "get_text_config", None)
+            if callable(get_text_config):
+                try:
+                    text_cfg = get_text_config()
+                except (TypeError, ValueError):
+                    text_cfg = None
+        if text_cfg is not None and text_cfg is not config:
+            softcap = getattr(text_cfg, "final_logit_softcapping", None)
+    return 0 if softcap is None else softcap
+
+def _unsloth_get_mm_token_id(processing_class, attr_name, token):
+    tokenizer = getattr(processing_class, "tokenizer", processing_class)
+    token_id = getattr(processing_class, attr_name, None)
+    if token_id is None:
+        token_id = getattr(tokenizer, attr_name, None)
+
+    convert_tokens_to_ids = getattr(tokenizer, "convert_tokens_to_ids", None)
+    if token_id is None and convert_tokens_to_ids is not None:
+        token_id = convert_tokens_to_ids(token)
+
+    if type(token_id) is int and token_id >= 0:
+        if token_id != getattr(tokenizer, "unk_token_id", None):
+            return token_id
+    return None
+
+def _unsloth_fix_mm_token_type_ids(
+    processing_class, input_ids, mm_token_type_ids = None, completion_ids = None
+):
+    image_token_id = _unsloth_get_mm_token_id(
+        processing_class, "image_token_id", "<|image_pad|>"
+    )
+    video_token_id = _unsloth_get_mm_token_id(
+        processing_class, "video_token_id", "<|video_pad|>"
+    )
+
+    if image_token_id is not None or video_token_id is not None:
+        rebuilt = input_ids.new_zeros(input_ids.shape)
+        if image_token_id is not None:
+            rebuilt = rebuilt.masked_fill(input_ids == image_token_id, 1)
+        if video_token_id is not None:
+            rebuilt = rebuilt.masked_fill(input_ids == video_token_id, 2)
+        return rebuilt
+
+    if (
+        mm_token_type_ids is not None
+        and completion_ids is not None
+        and mm_token_type_ids.shape[0] == input_ids.shape[0]
+        and mm_token_type_ids.shape[1] + completion_ids.shape[1] == input_ids.shape[1]
+    ):
+        return torch.cat(
+            [mm_token_type_ids, mm_token_type_ids.new_zeros(completion_ids.shape)],
+            dim = 1,
+        )
+    return mm_token_type_ids
+
+def _unsloth_clear_stateful_mrope(model):
+    modules = getattr(model, "modules", None)
+    if modules is None:
+        return False
+
+    cleared = False
+    for module in modules():
+        if hasattr(module, "compute_3d_position_ids") and hasattr(
+            module, "rope_deltas"
+        ):
+            module.rope_deltas = None
+            cleared = True
+    return cleared
+
 def grpo_compute_loss(
     ref,
     new,
@@ -351,6 +474,11 @@ def grpo_compute_loss(
     get_sapo_token_loss = kwargs.get("get_sapo_token_loss", None)
     sapo_temperature_pos = kwargs.get("sapo_temperature_pos", 1.0)
     sapo_temperature_neg = kwargs.get("sapo_temperature_neg", 1.05)
+    get_gamma_weights = kwargs.get("get_gamma_weights", None)
+    vespo_k_pos = kwargs.get("vespo_k_pos", 2.0)
+    vespo_lambda_pos = kwargs.get("vespo_lambda_pos", 3.0)
+    vespo_k_neg = kwargs.get("vespo_k_neg", 3.0)
+    vespo_lambda_neg = kwargs.get("vespo_lambda_neg", 2.0)
     get_off_policy_mask = kwargs.get("get_off_policy_mask", None)
     off_policy_mask_threshold  = kwargs.get("off_policy_mask_threshold", None)
     input_ids = input_ids.unsqueeze(-1)
@@ -442,6 +570,20 @@ def grpo_compute_loss(
                 coef_1[~positive_advantages_mask], sapo_temperature_neg
             )
         loss_i = -loss_i * advantages
+    elif loss_type == "vespo":
+        if get_gamma_weights is None:
+            raise Exception("vespo is only available in TRL 0.26.0+")
+        phi_seq = get_gamma_weights(
+            advantages=advantages,
+            log_ratio_per_token=log_ratio,
+            mask=mask,
+            importance_sampling_ratio=kwargs.get("importance_sampling_ratio"),
+            k_pos=vespo_k_pos,
+            lambda_pos=vespo_lambda_pos,
+            k_neg=vespo_k_neg,
+            lambda_neg=vespo_lambda_neg,
+        )
+        loss_i = -phi_seq * advantages * new
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
@@ -474,7 +616,7 @@ def grpo_compute_loss(
     elif loss_type == "dr_grpo":
         loss = (loss_i * mask).sum() / (loss_i.size(0) * max_completion_length)
         loss = loss / current_gradient_accumulation_steps
-    elif loss_type in ["cispo", "dapo"]:
+    elif loss_type in ["cispo", "dapo", "vespo"]:
         normalizer = num_items_in_batch/ num_processes
         loss = (loss_i * mask).sum() / normalizer
     else:
@@ -522,9 +664,9 @@ class UnslothEfficientGRPO(torch.autograd.Function):
 
         device =_new_logps.device
         grad_inputs = torch.empty_like(_new_logps)
-        accumulated_loss              = torch.zeros(1, device = device)
-        accumulated_completion_length = torch.zeros(1, device = device)
-        accumulated_mean_kl           = torch.zeros(1, device = device)
+        accumulated_loss              = torch.zeros(1, device = device)[0]
+        accumulated_completion_length = torch.zeros(1, device = device)[0]
+        accumulated_mean_kl           = torch.zeros(1, device = device)[0]
         accumulated_delta             = []
         accumulated_flat_is_ratio     = []
         accumulated_coef_1            = []
@@ -649,6 +791,7 @@ def grpo_accumulated_loss(
     old_logps,
     ref_logps,
     n_chunks = -1,
+    tool_mask = None,
     **kwargs,
 ):
     # All Unsloth Zoo code licensed under AGPL3
@@ -658,6 +801,14 @@ def grpo_accumulated_loss(
     image_grid_thw = kwargs.get('image_grid_thw',None)
     pixel_attention_mask = kwargs.get('pixel_attention_mask',None)
     image_sizes = kwargs.get('image_sizes',None)
+    num_images = kwargs.get('num_images',None)
+    # Transformers 5.x requires token_type_ids/mm_token_type_ids for some vision models
+    token_type_ids = kwargs.get('token_type_ids',None)
+    mm_token_type_ids = kwargs.get('mm_token_type_ids',None)
+    if mm_token_type_ids is not None or image_grid_thw is not None:
+        mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+            trainer.processing_class, input_ids, mm_token_type_ids
+        )
     sampling_per_token_logps = kwargs.get("sampling_per_token_logps", None) if getattr(trainer, "vllm_importance_sampling_correction", False) else None
     temperature = kwargs.get("temperature", 1.0)
     logit_scale_multiply = kwargs.get("logit_scale_multiply", 0.0)
@@ -671,6 +822,11 @@ def grpo_accumulated_loss(
     kwargs["get_sapo_token_loss"] = trainer.get_sapo_token_loss if hasattr(trainer, "get_sapo_token_loss") else None
     kwargs["sapo_temperature_pos"] = trainer.args.sapo_temperature_pos if hasattr(trainer.args, "sapo_temperature_pos") else None
     kwargs["sapo_temperature_neg"] = trainer.args.sapo_temperature_neg if hasattr(trainer.args, "sapo_temperature_neg") else None
+    kwargs["get_gamma_weights"] = trainer.get_gamma_weights if hasattr(trainer, "get_gamma_weights") else None
+    kwargs["vespo_k_pos"] = trainer.args.vespo_k_pos if hasattr(trainer.args, "vespo_k_pos") else 2.0
+    kwargs["vespo_k_neg"] = trainer.args.vespo_k_neg if hasattr(trainer.args, "vespo_k_neg") else 3.0
+    kwargs["vespo_lambda_pos"] = trainer.args.vespo_lambda_pos if hasattr(trainer.args, "vespo_lambda_pos") else 3.0
+    kwargs["vespo_lambda_neg"] = trainer.args.vespo_lambda_neg if hasattr(trainer.args, "vespo_lambda_neg") else 2.0
     kwargs["get_off_policy_mask"] = trainer.get_off_policy_mask if hasattr(trainer, "get_off_policy_mask") else None
     kwargs["off_policy_mask_threshold"] = trainer.args.off_policy_mask_threshold  if hasattr(trainer.args, "off_policy_mask_threshold") else None
     kwargs["use_vllm"] = trainer.use_vllm
@@ -744,10 +900,12 @@ def grpo_accumulated_loss(
             sampling_per_token_logps = align_logprobs_with_mask(sampling_per_token_logps, completion_mask)
         else:
             sampling_per_token_logps = None
+        completion_mask = align_completion_tool_mask(tool_mask, completion_mask)
         attention_mask =  input_ids != trainer.processing_class.pad_token_id
         attention_mask = attention_mask.to(attention_mask.dtype)
     else:
         completion_input_ids = input_ids[:, -logits_to_keep:]
+        completion_mask = align_completion_tool_mask(tool_mask, completion_mask)
 
     unwrapped_model = trainer.accelerator.unwrap_model(trainer.model, keep_fp32_wrapper = False)
 
@@ -758,61 +916,84 @@ def grpo_accumulated_loss(
 
     all_logprobs_list = []
 
-    attention_mask_chunks = torch.chunk(attention_mask, chunks=B, dim=0)
-    completion_ids_chunks = torch.chunk(completion_input_ids, chunks=B, dim=0)
-
-    def chunk_optional(tensor, chunks):
-        if tensor is None:
-            return [None] * chunks
-        return torch.chunk(tensor, chunks=chunks, dim=0)
+    def slice_sample_axis(value, start, end):
+        if value is None:
+            return None
+        return value[start:end]
 
     import math
     total_samples = input_ids.shape[0]
     batch_size = math.ceil(total_samples / B)
+    if isinstance(num_images, torch.Tensor):
+        num_images = num_images.detach().cpu().reshape(-1).tolist()
+    if image_grid_thw is not None and pixel_values is not None and num_images is not None:
+        rows_per_image = image_grid_thw.prod(dim=-1)
+        rows_per_sample = torch.split(rows_per_image, num_images)
+        rows_per_sample = torch.stack([s.sum() for s in rows_per_sample])
+        cum_rows = torch.cat(
+            [
+                torch.tensor([0], device=rows_per_sample.device),
+                rows_per_sample.cumsum(0),
+            ]
+        )
+        cum_imgs = torch.tensor([0] + num_images).cumsum(0)
+    else:
+        cum_rows = None
+        cum_imgs = None
 
     input_ids_chunks = []
     attention_mask_chunks = []
+    completion_ids_chunks = []
     pixel_values_chunks = []
     image_grid_thw_chunks = []
     pixel_attention_mask_chunks = []
+    image_sizes_chunks = []
+    token_type_ids_chunks = []
+    mm_token_type_ids_chunks = []
 
     current_pixel_idx = 0
     #TRL 0.23.0 batching logic
     for start in range(0, total_samples, batch_size):
-        end = start + batch_size
+        end = min(start + batch_size, total_samples)
 
         input_ids_chunks.append(input_ids[start:end])
         attention_mask_chunks.append(attention_mask[start:end])
+        completion_ids_chunks.append(completion_input_ids[start:end])
+        image_sizes_chunks.append(slice_sample_axis(image_sizes, start, end))
+        token_type_ids_chunks.append(slice_sample_axis(token_type_ids, start, end))
+        mm_token_type_ids_chunks.append(
+            slice_sample_axis(mm_token_type_ids, start, end)
+        )
 
         if image_grid_thw is not None and pixel_values is not None:
 
-            grid_slice = image_grid_thw[start:end]
+            if num_images is None:
+                grid_slice = image_grid_thw[start:end]
+                batch_pixel_count = grid_slice.prod(dim=-1).sum().item()
+                start_pixel_idx = current_pixel_idx
+                end_pixel_idx = current_pixel_idx + batch_pixel_count
+                current_pixel_idx = end_pixel_idx
+            else:
+                start_pixel_idx = cum_rows[start].item()
+                end_pixel_idx = cum_rows[end].item()
+                img_start, img_end = cum_imgs[start], cum_imgs[end]
+                grid_slice = image_grid_thw[img_start:img_end]
             image_grid_thw_chunks.append(grid_slice)
-            batch_pixel_count = grid_slice.prod(dim=-1).sum().item()
-
-            start_pixel_idx = current_pixel_idx
-            end_pixel_idx = current_pixel_idx + batch_pixel_count
 
             pixel_values_chunks.append(pixel_values[start_pixel_idx:end_pixel_idx])
 
             if pixel_attention_mask is not None:
-                pixel_attention_mask_chunks.append(
-                    pixel_attention_mask[start_pixel_idx:end_pixel_idx]
-                )
+                if pixel_attention_mask.shape[0] == pixel_values.shape[0]:
+                    pixel_attention_mask_chunks.append(pixel_attention_mask[start_pixel_idx:end_pixel_idx])
+                else:
+                    pixel_attention_mask_chunks.append(pixel_attention_mask[start:end])
             else:
                 pixel_attention_mask_chunks.append(None)
-
-            current_pixel_idx = end_pixel_idx
 
         else:
             pixel_values_chunks.append(None)
             image_grid_thw_chunks.append(None)
             pixel_attention_mask_chunks.append(None)
-
-    if image_sizes is not None and not isinstance(image_sizes, torch.Tensor):
-        image_sizes_chunks = [[size] for size in image_sizes]
-    else:
-        image_sizes_chunks = chunk_optional(image_sizes, B)
 
     zipped_inputs = zip(
         input_ids_chunks,
@@ -821,6 +1002,8 @@ def grpo_accumulated_loss(
         image_grid_thw_chunks,
         pixel_attention_mask_chunks,
         image_sizes_chunks,
+        token_type_ids_chunks,
+        mm_token_type_ids_chunks,
         completion_ids_chunks
     )
 
@@ -842,7 +1025,7 @@ def grpo_accumulated_loss(
                     logit_scale_multiply, logit_scale_divide,
                     logit_softcapping, temperature):
             #Only the activations are needed so if we keep entire computational graph, keeps unnecessary memory on CPU so we detach it
-            ctx.saved_hidden_states = hidden_states.detach().contiguous().to("cpu", non_blocking=True) 
+            ctx.saved_hidden_states = hidden_states.detach().contiguous().to("cpu", non_blocking=True)
             ctx.device = hidden_states.device
             ctx.dtype = hidden_states.dtype
 
@@ -912,6 +1095,29 @@ def grpo_accumulated_loss(
                 logit_scale_multiply, logit_scale_divide,
                 logit_softcapping, temperature
             )
+
+    def compute_logprobs_chunk(new_hidden_states_chunk, completion_ids, input_ids_chunk):
+        # Hidden states -> lm_head matmul path; raw logits -> skip matmul and
+        # skip scale/softcap (model forward already applied them).
+        chunks = input_ids_chunk.shape[0] * multiplier
+        if new_hidden_states_chunk.shape[-1] == lm_head.shape[1]:
+            return efficient_log_softmax(
+                new_hidden_states_chunk,
+                lm_head,
+                completion_ids,
+                chunks = chunks,
+                logit_scale_multiply = logit_scale_multiply,
+                logit_scale_divide = logit_scale_divide,
+                logit_softcapping = logit_softcapping,
+                temperature = temperature,
+                batch_size = B,
+            )
+        return chunked_selective_log_softmax(
+            new_hidden_states_chunk,
+            completion_ids,
+            temperature = temperature,
+            chunks = chunks,
+        )
     for (
         input_ids_chunk,
         attention_mask_chunk,
@@ -919,8 +1125,15 @@ def grpo_accumulated_loss(
         image_grid_thw_chunk,
         pixel_attention_mask_chunk,
         image_sizes_chunk,
+        token_type_ids_chunk,
+        mm_token_type_ids_chunk,
         completion_ids
     ) in zipped_inputs:
+            _extra_vision_kwargs = {}
+            if token_type_ids_chunk is not None:
+                _extra_vision_kwargs["token_type_ids"] = token_type_ids_chunk
+            if mm_token_type_ids_chunk is not None:
+                _extra_vision_kwargs["mm_token_type_ids"] = mm_token_type_ids_chunk
             with autocaster:
                 if pixel_values is None:
                     new_hidden_states_chunk = unwrapped_model(
@@ -930,10 +1143,12 @@ def grpo_accumulated_loss(
                         image_grid_thw = image_grid_thw_chunk,
                         pixel_attention_mask = pixel_attention_mask_chunk,
                         image_sizes = image_sizes_chunk,
+                        **_extra_vision_kwargs,
                     ).logits
 
                     new_hidden_states_chunk = new_hidden_states_chunk[:, -(logits_to_keep + max_left_pad + 1): , :]
                     new_hidden_states_chunk = new_hidden_states_chunk[:, :-1, :]
+                    logprobs_chunk = compute_logprobs_chunk(new_hidden_states_chunk, completion_ids, input_ids_chunk)
                 else:
                     new_hidden_states_chunk = unwrapped_model(
                         input_ids = input_ids_chunk,
@@ -943,21 +1158,11 @@ def grpo_accumulated_loss(
                         pixel_attention_mask = pixel_attention_mask_chunk,
                         image_sizes = image_sizes_chunk,
                         logits_to_keep = logits_to_keep + 1,
+                        **_extra_vision_kwargs,
                     ).logits
 
                     new_hidden_states_chunk = new_hidden_states_chunk[:, :-1, :]
-
-                logprobs_chunk = efficient_log_softmax(
-                    new_hidden_states_chunk,
-                    lm_head,
-                    completion_ids,
-                    chunks=input_ids_chunk.shape[0]*multiplier,
-                    logit_scale_multiply=logit_scale_multiply,
-                    logit_scale_divide=logit_scale_divide,
-                    logit_softcapping=logit_softcapping,
-                    temperature=temperature,
-                    batch_size = B
-                )
+                    logprobs_chunk = compute_logprobs_chunk(new_hidden_states_chunk, completion_ids, input_ids_chunk)
                 #This is needed to avoid race conditions with GPT OSS offload_embbed=True
                 #However, it seems that this line does not slow down or disrupt models.
                 device_synchronize()
@@ -1029,6 +1234,11 @@ def grpo_compute_loss_slow(
     get_sapo_token_loss = kwargs.get("get_sapo_token_loss", None)
     sapo_temperature_pos = kwargs.get("sapo_temperature_pos", 1.0)
     sapo_temperature_neg = kwargs.get("sapo_temperature_neg", 1.05)
+    get_gamma_weights = kwargs.get("get_gamma_weights", None)
+    vespo_k_pos = kwargs.get("vespo_k_pos", 2.0)
+    vespo_lambda_pos = kwargs.get("vespo_lambda_pos", 3.0)
+    vespo_k_neg = kwargs.get("vespo_k_neg", 3.0)
+    vespo_lambda_neg = kwargs.get("vespo_lambda_neg", 2.0)
     get_off_policy_mask = kwargs.get("get_off_policy_mask", None)
     off_policy_mask_threshold  = kwargs.get("off_policy_mask_threshold", None)
     input_ids = input_ids.unsqueeze(-1)
@@ -1120,6 +1330,20 @@ def grpo_compute_loss_slow(
                 coef_1[~positive_advantages_mask], sapo_temperature_neg
             )
         loss_i = -loss_i * advantages
+    elif loss_type == "vespo":
+        if get_gamma_weights is None:
+            raise Exception("vespo is only available in TRL 0.26.0+")
+        phi_seq = get_gamma_weights(
+            advantages=advantages,
+            log_ratio_per_token=log_ratio,
+            mask=mask,
+            importance_sampling_ratio=kwargs.get("importance_sampling_ratio"),
+            k_pos=vespo_k_pos,
+            lambda_pos=vespo_lambda_pos,
+            k_neg=vespo_k_neg,
+            lambda_neg=vespo_lambda_neg,
+        )
+        loss_i = -phi_seq * advantages * new
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
@@ -1152,7 +1376,7 @@ def grpo_compute_loss_slow(
     elif loss_type == "dr_grpo":
         loss = (loss_i * mask).sum() / (loss_i.size(0) * max_completion_length)
         loss = loss / current_gradient_accumulation_steps
-    elif loss_type in ["cispo", "dapo"]:
+    elif loss_type in ["cispo", "dapo", "vespo"]:
         normalizer = num_items_in_batch/ num_processes
         loss = (loss_i * mask).sum() / normalizer
     else:
@@ -1475,7 +1699,7 @@ Parameters:
         eval_delay = 0,
         torch_empty_cache_steps = 250,
         learning_rate = 5e-05,
-        weight_decay = 0.01,
+        weight_decay = 0.001,
         adam_beta1 = 0.9,
         adam_beta2 = 0.999,
         adam_epsilon = 1e-08,
@@ -1640,8 +1864,8 @@ Parameters:
         wandb_log_unique_prompts = False,
         vllm_sampling_params = None,
         unsloth_num_chunks = -1,
-        unsloth_logit_chunk_multiplier = None, 
-        unsloth_grpo_mini_batch = None, 
+        unsloth_logit_chunk_multiplier = None,
+        unsloth_grpo_mini_batch = None,
         
         **kwargs,
     ):
@@ -2310,7 +2534,24 @@ class _UnslothGRPOTrainer(BaseTrainer):
                     max_model_len = self.max_prompt_length + self.max_completion_length
                 else:
                     max_model_len = None
-                self.llm = model.vllm_engine
+                if getattr(getattr(model, 'vllm_engine', None), 'shared_weights', False):
+                    self.llm = model.vllm_engine
+                else:
+                    self.llm = LLM(
+                    model=model.name_or_path,
+                    tensor_parallel_size=args.vllm_tensor_parallel_size,
+                    gpu_memory_utilization=self.vllm_gpu_memory_utilization,
+                    max_num_seqs=self.args.per_device_train_batch_size
+                    * self.vllm_tensor_parallel_size
+                    * self.args.steps_per_generation,
+                    max_model_len=max_model_len,
+                    distributed_executor_backend="external_launcher",
+                    seed=self.accelerator.process_index // self.vllm_tensor_parallel_size,
+                    max_num_batched_tokens=4096,
+                    model_impl=self.args.vllm_model_impl,
+                    enable_sleep_mode=self.args.vllm_enable_sleep_mode,
+                    logprobs_mode="processed_logprobs",
+                )
                 if self.args.vllm_enable_sleep_mode:
                     self.llm.sleep(level=1)
             else:
@@ -2576,6 +2817,14 @@ class _UnslothGRPOTrainer(BaseTrainer):
                 kwargs.get("pixel_attention_mask", None),
                 kwargs.get("image_sizes", None),
             )
+            num_images = kwargs.get("num_images", None)
+            # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
+            token_type_ids = kwargs.get("token_type_ids", None)
+            mm_token_type_ids = kwargs.get("mm_token_type_ids", None)
+            if mm_token_type_ids is not None or image_grid_thw is not None:
+                mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                    self.processing_class, input_ids, mm_token_type_ids
+                )
 
             unwrapped_model = self.accelerator.unwrap_model(
                 model, keep_fp32_wrapper = False
@@ -2623,69 +2872,139 @@ class _UnslothGRPOTrainer(BaseTrainer):
             else:
                 max_left_pad = 0
 
-            # input_ids_chunks = torch.chunk(input_ids, chunks = B, dim = 0)
-            attention_mask_chunks = torch.chunk(attention_mask, chunks = B, dim = 0)
-
-            def chunk_optional(tensor, chunks):
-                if tensor is None:
-                    return [None] * chunks
-                return torch.chunk(tensor, chunks = chunks, dim = 0)
+            def slice_sample_axis(value, start, end):
+                if value is None:
+                    return None
+                return value[start:end]
 
             import math
 
             total_samples = input_ids.shape[0]
             batch_size = math.ceil(total_samples / B)
+            if isinstance(num_images, torch.Tensor):
+                num_images = num_images.detach().cpu().reshape(-1).tolist()
+            if (
+                image_grid_thw is not None
+                and pixel_values is not None
+                and num_images is not None
+            ):
+                rows_per_image = image_grid_thw.prod(dim = -1)
+                rows_per_sample = torch.split(rows_per_image, num_images)
+                rows_per_sample = torch.stack([s.sum() for s in rows_per_sample])
+                # why: cum_rows is indexed via .item() inside the per-chunk loop;
+                # keeping it on CPU avoids per-iteration GPU->CPU sync.
+                cum_rows = torch.cat(
+                    [
+                        torch.tensor([0], device = rows_per_sample.device),
+                        rows_per_sample.cumsum(0),
+                    ]
+                ).cpu()
+                cum_imgs = torch.tensor([0] + num_images).cumsum(0)
+            else:
+                cum_rows = None
+                cum_imgs = None
+
+            def _first_dim_len(value):
+                if value is None:
+                    return None
+                if hasattr(value, "shape"):
+                    return value.shape[0]
+                try:
+                    return len(value)
+                except TypeError:
+                    return None
+
+            total_images = sum(num_images) if num_images is not None else None
+            _image_sizes_n = _first_dim_len(image_sizes)
 
             input_ids_chunks = []
             attention_mask_chunks = []
             pixel_values_chunks = []
             image_grid_thw_chunks = []
             pixel_attention_mask_chunks = []
+            image_sizes_chunks = []
+            token_type_ids_chunks = []
+            mm_token_type_ids_chunks = []
 
             current_pixel_idx = 0
             # TRL 0.23.0 batching logic
             for start in range(0, total_samples, batch_size):
-                end = start + batch_size
+                end = min(start + batch_size, total_samples)
 
                 input_ids_chunks.append(input_ids[start:end])
                 attention_mask_chunks.append(attention_mask[start:end])
+                token_type_ids_chunks.append(
+                    slice_sample_axis(token_type_ids, start, end)
+                )
+                mm_token_type_ids_chunks.append(
+                    slice_sample_axis(mm_token_type_ids, start, end)
+                )
 
                 if image_grid_thw is not None and pixel_values is not None:
-                    grid_slice = image_grid_thw[start:end]
+                    if num_images is None:
+                        grid_slice = image_grid_thw[start:end]
+                        batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
+                        start_pixel_idx = current_pixel_idx
+                        end_pixel_idx = current_pixel_idx + batch_pixel_count
+                        current_pixel_idx = end_pixel_idx
+                        img_start = img_end = None
+                    else:
+                        start_pixel_idx = cum_rows[start].item()
+                        end_pixel_idx = cum_rows[end].item()
+                        img_start = cum_imgs[start].item()
+                        img_end = cum_imgs[end].item()
+                        grid_slice = image_grid_thw[img_start:img_end]
                     image_grid_thw_chunks.append(grid_slice)
-
-                    batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
-
-                    start_pixel_idx = current_pixel_idx
-                    end_pixel_idx = current_pixel_idx + batch_pixel_count
 
                     pixel_values_chunks.append(
                         pixel_values[start_pixel_idx:end_pixel_idx]
                     )
 
-                    if pixel_attention_mask is not None:
+                    if image_sizes is None:
+                        image_sizes_chunks.append(None)
+                    elif (
+                        num_images is not None
+                        and _image_sizes_n == total_images
+                        and img_start is not None
+                    ):
+                        image_sizes_chunks.append(image_sizes[img_start:img_end])
+                    else:
+                        image_sizes_chunks.append(
+                            slice_sample_axis(image_sizes, start, end)
+                        )
+
+                    if pixel_attention_mask is None:
+                        pixel_attention_mask_chunks.append(None)
+                    elif (
+                        num_images is not None
+                        and img_start is not None
+                        and pixel_attention_mask.shape[0] == image_grid_thw.shape[0]
+                    ):
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[img_start:img_end]
+                        )
+                    elif (
+                        pixel_attention_mask.shape[0] == pixel_values.shape[0]
+                        and pixel_attention_mask.shape[0] != input_ids.shape[0]
+                    ):
                         pixel_attention_mask_chunks.append(
                             pixel_attention_mask[start_pixel_idx:end_pixel_idx]
                         )
                     else:
-                        pixel_attention_mask_chunks.append(None)
-
-                    current_pixel_idx = end_pixel_idx
+                        pixel_attention_mask_chunks.append(
+                            pixel_attention_mask[start:end]
+                        )
 
                 else:
                     pixel_values_chunks.append(None)
                     image_grid_thw_chunks.append(None)
                     pixel_attention_mask_chunks.append(None)
-
-            if image_sizes is not None and not isinstance(image_sizes, torch.Tensor):
-                image_sizes_chunks = [[size] for size in image_sizes]
-            else:
-                image_sizes_chunks = chunk_optional(image_sizes, B)
+                    image_sizes_chunks.append(
+                        slice_sample_axis(image_sizes, start, end)
+                    )
 
             temperature = self.temperature
-            logit_softcapping = getattr(model.config, "final_logit_softcapping", 0)
-            if logit_softcapping is None:
-                logit_softcapping = 0
+            logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)
             logit_scale_multiply = getattr(model.config, "logit_scale", 0)
             if logit_scale_multiply is None:
                 logit_scale_multiply = 0
@@ -2700,6 +3019,8 @@ class _UnslothGRPOTrainer(BaseTrainer):
                 image_grid_thw_chunks,
                 pixel_attention_mask_chunks,
                 image_sizes_chunks,
+                token_type_ids_chunks,
+                mm_token_type_ids_chunks,
             )
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
 
@@ -2711,7 +3032,16 @@ class _UnslothGRPOTrainer(BaseTrainer):
                     image_grid_thw_chunk,
                     pixel_attention_mask_chunk,
                     image_sizes_chunk,
+                    token_type_ids_chunk,
+                    mm_token_type_ids_chunk,
                 ) in zipped_inputs:
+                    _extra_vision_kwargs = {}
+                    if token_type_ids_chunk is not None:
+                        _extra_vision_kwargs["token_type_ids"] = token_type_ids_chunk
+                    if mm_token_type_ids_chunk is not None:
+                        _extra_vision_kwargs["mm_token_type_ids"] = (
+                            mm_token_type_ids_chunk
+                        )
                     with torch.amp.autocast(
                         device_type = "cuda", dtype = self._autocast_dtype
                     ):
@@ -2723,6 +3053,7 @@ class _UnslothGRPOTrainer(BaseTrainer):
                                 image_grid_thw = image_grid_thw_chunk,
                                 pixel_attention_mask = pixel_attention_mask_chunk,
                                 image_sizes = image_sizes_chunk,
+                                **_extra_vision_kwargs,
                             ).logits
 
                             completion_input_ids_chunk = input_ids_chunk[
@@ -2732,6 +3063,18 @@ class _UnslothGRPOTrainer(BaseTrainer):
                                 :, -(logits_to_keep + max_left_pad + 1) :, :
                             ]
                             logits_chunk = logits_chunk[:, :-1, :]
+                            logprobs_chunk = (
+                                chunked_hidden_states_selective_log_softmax(
+                                    logits_chunk,
+                                    lm_head,
+                                    completion_input_ids_chunk,
+                                    chunks = input_ids_chunk.shape[0] * multiplier,
+                                    logit_scale_multiply = logit_scale_multiply,
+                                    logit_scale_divide = logit_scale_divide,
+                                    logit_softcapping = logit_softcapping,
+                                    temperature = temperature,
+                                )
+                            )
                         else:
                             # Essentially, for VLMs we do not go via the optimized path in models/,
                             # so we don't encounter the Flash Attn left-padding issue.
@@ -2743,23 +3086,34 @@ class _UnslothGRPOTrainer(BaseTrainer):
                                 pixel_attention_mask = pixel_attention_mask_chunk,
                                 image_sizes = image_sizes_chunk,
                                 logits_to_keep = logits_to_keep + 1,
+                                **_extra_vision_kwargs,
                             ).logits
 
                             logits_chunk = logits_chunk[:, :-1, :]
                             completion_input_ids_chunk = input_ids_chunk[
                                 :, -logits_to_keep:
                             ]
-
-                        logprobs_chunk = chunked_hidden_states_selective_log_softmax(
-                            logits_chunk,
-                            lm_head,
-                            completion_input_ids_chunk,
-                            chunks = input_ids_chunk.shape[0] * multiplier,
-                            logit_scale_multiply = logit_scale_multiply,
-                            logit_scale_divide = logit_scale_divide,
-                            logit_softcapping = logit_softcapping,
-                            temperature = temperature,
-                        )
+                            # Guard: check if model returned hidden states or logits
+                            if logits_chunk.shape[-1] == lm_head.shape[1]:
+                                logprobs_chunk = (
+                                    chunked_hidden_states_selective_log_softmax(
+                                        logits_chunk,
+                                        lm_head,
+                                        completion_input_ids_chunk,
+                                        chunks = input_ids_chunk.shape[0] * multiplier,
+                                        logit_scale_multiply = logit_scale_multiply,
+                                        logit_scale_divide = logit_scale_divide,
+                                        logit_softcapping = logit_softcapping,
+                                        temperature = temperature,
+                                    )
+                                )
+                            else:
+                                # Model returned logits directly - scaling/softcapping already applied by model forward
+                                logprobs_chunk = chunked_selective_log_softmax(
+                                    logits_chunk,
+                                    completion_input_ids_chunk,
+                                    temperature,
+                                )
                     # This is needed to avoid race conditions with GPT OSS offload_embbed=True
                     # However, it seems that this line does not slow down or disrupt models.
                     device_synchronize()
@@ -3091,7 +3445,7 @@ class _UnslothGRPOTrainer(BaseTrainer):
                     vllm_inputs = all_prompts_text
 
                 with profiling_context(self, "vLLM.generate"):
-                    all_outputs = self.llm.generate(vllm_inputs, sampling_params=sampling_params, use_tqdm=False, lora_request = self.model.load_lora('grpo_trainer_lora_model', load_tensors = True))
+                    all_outputs = self.llm.generate(vllm_inputs, sampling_params=sampling_params, use_tqdm=False, lora_request = self.model.load_lora('grpo_trainer_lora_model', load_tensors = True) if getattr(self.llm, 'shared_weights', False) else None)
 
                 all_prompt_ids = [output.prompt_token_ids for output in all_outputs]
                 all_completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
@@ -3161,6 +3515,14 @@ class _UnslothGRPOTrainer(BaseTrainer):
                 **kwargs,
             )
             generate_inputs = super()._prepare_inputs(generate_inputs)
+            if "mm_token_type_ids" in generate_inputs or "image_grid_thw" in generate_inputs:
+                mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                    self.processing_class,
+                    generate_inputs["input_ids"],
+                    generate_inputs.get("mm_token_type_ids", None),
+                )
+                if mm_token_type_ids is not None:
+                    generate_inputs["mm_token_type_ids"] = mm_token_type_ids
 
             with (
                 profiling_context(self, "transformers.generate"),
@@ -3296,6 +3658,16 @@ class _UnslothGRPOTrainer(BaseTrainer):
                 [token_type_ids, token_type_ids.new_zeros(completion_ids.shape)], dim=1
             )
 
+        if "mm_token_type_ids" in forward_kwargs or "image_grid_thw" in forward_kwargs:
+            _mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                self.processing_class,
+                prompt_completion_ids,
+                forward_kwargs.get("mm_token_type_ids", None),
+                completion_ids = completion_ids,
+            )
+            if _mm_token_type_ids is not None:
+                forward_kwargs["mm_token_type_ids"] = _mm_token_type_ids
+
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
         
         max_left_pad = None
@@ -3312,7 +3684,7 @@ class _UnslothGRPOTrainer(BaseTrainer):
                 # Left pad prompt before calculation old and ref hidden states
                 left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
                 max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
-        self.model.for_training()
+        self.model.for_training(use_gradient_checkpointing=getattr(self.args, 'gradient_checkpointing', True))
 
         num_images = [len(img_list) for img_list in images] if images is not None else None
 
@@ -3503,6 +3875,8 @@ class _UnslothGRPOTrainer(BaseTrainer):
             output["image_sizes"] = forward_kwargs["image_sizes"]
         if "token_type_ids" in forward_kwargs:
             output["token_type_ids"] = forward_kwargs["token_type_ids"]
+        if "mm_token_type_ids" in forward_kwargs:
+            output["mm_token_type_ids"] = forward_kwargs["mm_token_type_ids"]
         if images is not None:
             output["num_images"] = num_images
         if max_left_pad is not None:
@@ -3576,14 +3950,26 @@ class _UnslothGRPOTrainer(BaseTrainer):
             inputs.get("pixel_attention_mask", None),
             inputs.get("image_sizes", None),
         )
+        num_images = inputs.get("num_images", None)
+        # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models
+        token_type_ids = inputs.get("token_type_ids", None)
+        mm_token_type_ids = inputs.get("mm_token_type_ids", None)
         num_items_in_batch = inputs.get("num_items_in_batch", None)
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
+        tool_mask = inputs.get("tool_mask", None)
         current_gradient_accumulation_steps = self.current_gradient_accumulation_steps
         num_processes = self.accelerator.num_processes
 
         input_ids = torch.cat([prompt_ids, completion_ids], dim = 1)
         bsz, qlen = input_ids.shape
         attention_mask = torch.cat([prompt_mask, completion_mask], dim = 1)
+        if mm_token_type_ids is not None or image_grid_thw is not None:
+            mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
+                self.processing_class,
+                input_ids,
+                mm_token_type_ids,
+                completion_ids = completion_ids,
+            )
         # attention_mask = None
         logits_to_keep = completion_ids.size(
             1
@@ -3636,9 +4022,7 @@ class _UnslothGRPOTrainer(BaseTrainer):
         input_ids = input_ids[:, -logits_to_keep:]
 
         # Get logit softcapping and logit scale
-        logit_softcapping = getattr(model.config, "final_logit_softcapping", 0)  # Gemma
-        if logit_softcapping is None:
-            logit_softcapping = 0
+        logit_softcapping = _unsloth_get_final_logit_softcapping(model.config)  # Gemma
         logit_scale_multiply = getattr(model.config, "logit_scale", 0)  # Cohere
         if logit_scale_multiply is None:
             logit_scale_multiply = 0
@@ -3648,6 +4032,16 @@ class _UnslothGRPOTrainer(BaseTrainer):
 
         max_left_pad = inputs.get("max_left_pad", 0)
         if per_token_logps is not None:
+            loss_mask = completion_mask
+            if tool_mask is not None:
+                if tool_mask.shape != completion_mask.shape:
+                    raise ValueError(
+                        "tool_mask/env_mask must have the same shape as completion_mask"
+                    )
+                loss_mask = completion_mask * tool_mask.to(
+                    device = completion_mask.device,
+                    dtype = completion_mask.dtype,
+                )
             (
                 loss,
                 completion_length,
@@ -3660,8 +4054,9 @@ class _UnslothGRPOTrainer(BaseTrainer):
                 ref_logps,
                 per_token_logps,
                 old_logps,
+                sampling_per_token_logps,
                 input_ids,
-                completion_mask,
+                loss_mask,
                 self.beta,
                 advantages,
                 pixel_values = pixel_values,
@@ -3680,9 +4075,59 @@ class _UnslothGRPOTrainer(BaseTrainer):
                 num_items_in_batch = num_items_in_batch,
                 current_gradient_accumulation_steps = current_gradient_accumulation_steps,
                 num_processes = num_processes,
-                sampling_per_token_logps = sampling_per_token_logps,
             )
         else:
+
+            def _unsloth_requires_multi_image_zoo(value):
+                if value is None:
+                    return False
+                if isinstance(value, torch.Tensor):
+                    counts = value.detach().cpu().reshape(-1).tolist()
+                else:
+                    counts = list(value)
+                return any(int(n) != 1 for n in counts)
+
+            if _unsloth_requires_multi_image_zoo(num_images) and not getattr(
+                self, "_unsloth_grpo_zoo_checked", False
+            ):
+                _supports_num_images = (
+                    "num_images" in inspect.signature(grpo_accumulated_loss).parameters
+                )
+                if not _supports_num_images:
+                    try:
+                        _zoo_src = inspect.getsource(grpo_accumulated_loss)
+                    except (TypeError, OSError):
+                        _zoo_src = ""
+                    _supports_num_images = "num_images" in _zoo_src
+                if not _supports_num_images:
+                    raise RuntimeError(
+                        "Multi-image GRPO requires an unsloth_zoo build whose "
+                        "grpo_accumulated_loss handles num_images. Please upgrade "
+                        "unsloth_zoo (see https://github.com/unslothai/unsloth-zoo/pull/613)."
+                    )
+                self._unsloth_grpo_zoo_checked = True
+            if tool_mask is not None and not getattr(
+                self, "_unsloth_grpo_tool_mask_zoo_checked", False
+            ):
+                _supports_tool_mask = (
+                    "tool_mask" in inspect.signature(grpo_accumulated_loss).parameters
+                )
+                if not _supports_tool_mask:
+                    try:
+                        _zoo_src = inspect.getsource(grpo_accumulated_loss)
+                    except (TypeError, OSError):
+                        _zoo_src = ""
+                    _supports_tool_mask = "tool_mask" in _zoo_src
+                if not _supports_tool_mask:
+                    raise RuntimeError(
+                        "env_mask/tool_mask GRPO requires an unsloth_zoo build whose "
+                        "grpo_accumulated_loss handles tool_mask. Please upgrade "
+                        "unsloth_zoo."
+                    )
+                self._unsloth_grpo_tool_mask_zoo_checked = True
+            _grpo_accumulated_loss_kwargs = {}
+            if tool_mask is not None:
+                _grpo_accumulated_loss_kwargs["tool_mask"] = tool_mask
             if hasattr(self.args, "loss_type"):
                 (
                     loss,
@@ -3697,6 +4142,9 @@ class _UnslothGRPOTrainer(BaseTrainer):
                     input_ids = _input_ids,
                     pixel_values = pixel_values,
                     image_grid_thw = image_grid_thw,
+                    pixel_attention_mask = pixel_attention_mask,
+                    image_sizes = image_sizes,
+                    num_images = num_images,
                     logits_to_keep = logits_to_keep,
                     completion_mask = completion_mask,
                     advantages = advantages,
@@ -3719,6 +4167,9 @@ class _UnslothGRPOTrainer(BaseTrainer):
                     current_gradient_accumulation_steps = current_gradient_accumulation_steps,
                     num_processes = num_processes,
                     sampling_per_token_logps = sampling_per_token_logps,
+                    token_type_ids = token_type_ids,
+                    mm_token_type_ids = mm_token_type_ids,
+                    **_grpo_accumulated_loss_kwargs,
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
@@ -3726,6 +4177,11 @@ class _UnslothGRPOTrainer(BaseTrainer):
                     grpo_accumulated_loss(
                         trainer = self,
                         input_ids = _input_ids,
+                        pixel_values = pixel_values,
+                        image_grid_thw = image_grid_thw,
+                        pixel_attention_mask = pixel_attention_mask,
+                        image_sizes = image_sizes,
+                        num_images = num_images,
                         logits_to_keep = logits_to_keep,
                         completion_mask = completion_mask,
                         advantages = advantages,
@@ -3737,6 +4193,9 @@ class _UnslothGRPOTrainer(BaseTrainer):
                         logit_scale_multiply = logit_scale_multiply,
                         logit_scale_divide = logit_scale_divide,
                         attention_mask = attention_mask,
+                        token_type_ids = token_type_ids,
+                        mm_token_type_ids = mm_token_type_ids,
+                        **_grpo_accumulated_loss_kwargs,
                     )
                 )
         if "train" in self._metrics:

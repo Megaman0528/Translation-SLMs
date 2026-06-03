@@ -1,6 +1,6 @@
 """
-2026.3.2
-2026.3.4
+2026.5.5
+2026.5.10
 4.57.6
 0.24.0
 __UNSLOTH_VERSIONING__
@@ -28,7 +28,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from unsloth_zoo.temporary_patches.common import torch_compile
 from typing import Any, List, Optional, Tuple, Union, Dict, Set, Callable
-from trl.trainer.orpo_trainer import (Any, AutoModelForCausalLM, BaseImageProcessor, BaseTrainer, Callable, DPODataCollatorWithPadding, DataCollator, DataLoader, Dataset, EvalLoopOutput, F, FeatureExtractionMixin, Literal, ORPOConfig, ORPOTrainer, Optional, PartialState, Path, PeftModel, PreTrainedModel, PreTrainedTokenizerBase, ProcessorMixin, TrainerCallback, Union, add_bos_token_if_needed, add_eos_token_if_needed, autocast, defaultdict, disable_dropout_in_model, inspect, is_comet_available, is_peft_available, is_torch_fx_proxy, is_torch_xla_available, is_wandb_available, log_table_to_comet_experiment, logger, logging, maybe_apply_chat_template, maybe_extract_prompt, nn, np, nullcontext, os, pad_to_length, pd, peft_module_casting_to_bf16, prepare_model_for_kbit_training, random, selective_log_softmax, textwrap, torch, warnings, AutoModelForCausalLM, BaseImageProcessor, Callable, DPODataCollatorWithPadding, DataCollator, Dataset, EvalLoopOutput, F, FeatureExtractionMixin, ORPOConfig, ORPOTrainer, Optional, PartialState, PeftModel, PreTrainedModel, PreTrainedTokenizerBase, ProcessorMixin, TrainerCallback, Union, autocast, defaultdict, disable_dropout_in_model, inspect, is_comet_available, is_peft_available, is_wandb_available, logger, maybe_apply_chat_template, maybe_extract_prompt, nn, np, os, peft_module_casting_to_bf16, prepare_model_for_kbit_training, torch, warnings, F, Optional, PeftModel, PreTrainedModel, is_peft_available, logger, os, torch)
+from trl.trainer.orpo_trainer import (Any, AutoModelForCausalLM, BaseImageProcessor, BaseTrainer, Callable, DPODataCollatorWithPadding, DataCollator, DataLoader, Dataset, EvalLoopOutput, F, FeatureExtractionMixin, Literal, ORPOConfig, ORPOTrainer, Optional, PartialState, Path, PeftModel, PreTrainedModel, PreTrainedTokenizerBase, ProcessorMixin, TrainerCallback, Union, add_bos_token_if_needed, add_eos_token_if_needed, autocast, defaultdict, disable_dropout_in_model, inspect, is_comet_available, is_peft_available, is_torch_fx_proxy, is_torch_xla_available, is_wandb_available, log_table_to_comet_experiment, logger, logging, maybe_apply_chat_template, maybe_extract_prompt, nn, np, nullcontext, os, pad_to_length, pd, peft_module_casting_to_bf16, prepare_model_for_kbit_training, random, selective_log_softmax, textwrap, torch, warnings, AutoModelForCausalLM, BaseImageProcessor, Callable, DPODataCollatorWithPadding, DataCollator, Dataset, EvalLoopOutput, F, FeatureExtractionMixin, ORPOConfig, ORPOTrainer, Optional, PartialState, PeftModel, PreTrainedModel, PreTrainedTokenizerBase, ProcessorMixin, TrainerCallback, Union, autocast, defaultdict, disable_dropout_in_model, inspect, is_comet_available, is_peft_available, is_wandb_available, logger, maybe_apply_chat_template, maybe_extract_prompt, nn, np, os, peft_module_casting_to_bf16, prepare_model_for_kbit_training, torch, warnings, F, Optional, PeftModel, PreTrainedModel, is_peft_available, logger, os, torch, F, np, F, Optional, PreTrainedModel, Union, add_bos_token_if_needed, add_eos_token_if_needed, is_torch_xla_available, nn, np, os, torch)
 
 
 import os
@@ -47,7 +47,6 @@ from transformers.training_args import ParallelMode
 from unsloth_zoo.device_type import DEVICE_TYPE, device_synchronize
 
 # Wrap trainer with padding to right and enable training mode
-# Also patches W&B since multiple runs must use wandb.finish()
 import functools
 from types import MethodType
 try:
@@ -57,6 +56,23 @@ except:
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
+        # Finish the previous W&B run if this is a subsequent train() call.
+        # We do this at the START of train() (not the end) so that
+        # evaluate() / log() still work after train() completes.
+        # HF's WandbCallback.setup() will call wandb.init() for the new run.
+        # See: https://github.com/unslothai/unsloth/issues/3954
+        if getattr(self, '_unsloth_training_completed', False):
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.finish()
+                    # Reset HF's WandbCallback so it calls wandb.init() for the new run
+                    for cb in self.callback_handler.callbacks:
+                        if type(cb).__name__ == 'WandbCallback':
+                            cb._initialized = False
+                            break
+            except:
+                pass
         # Enable training mode
         _was_training = None
         # Get gradient checkpointing setting from training arguments
@@ -77,12 +93,9 @@ def prepare_for_training_mode(f):
             reset_unsloth_gradient_checkpointing_buffers()
         except:
             pass
-        # Patch W&B to enable logging on future runs, otherwise it'll overwrite the first run
-        try:
-            import wandb
-            wandb.finish()
-        except:
-            pass
+        # Mark that training completed so the next train() call can
+        # finish this W&B run before starting a new one
+        self._unsloth_training_completed = True
         return output
     return wrapper
 pass
@@ -123,7 +136,7 @@ def chunked_hidden_states_selective_log_softmax(
         if logit_scale_divide != 0.0:
             chunk_logits = chunk_logits / logit_scale_divide
         if logit_softcapping != 0.0:
-            chunk_logits = chunk_logits * torch.tanh(chunk_logits / logit_softcapping)
+            chunk_logits = logit_softcapping * torch.tanh(chunk_logits / logit_softcapping)
 
         chunk_logits = chunk_logits.to(torch.float32)
 
@@ -141,14 +154,20 @@ def chunked_hidden_states_selective_log_softmax(
     return all_per_token_logps
 
 @torch.compile(dynamic = True, fullgraph = True, options = torch_compile_options,)
-def chunked_selective_log_softmax(logits, index):
-    # Split into 4 chunks only
-    chunked_logits = torch.chunk(logits.reshape(-1, logits.shape[-1]), chunks = 4, dim = 0)
-    chunked_index  = torch.chunk(index.reshape(-1), chunks = 4, dim = 0)
+def chunked_selective_log_softmax(
+    logits,
+    index,
+    temperature: float = 1.0,
+    chunks: int = 4,
+):
+    chunked_logits = torch.chunk(logits.reshape(-1, logits.shape[-1]), chunks = chunks, dim = 0)
+    chunked_index  = torch.chunk(index.reshape(-1), chunks = chunks, dim = 0)
     all_per_token_logps = []
     # Below loop does the same as selective_log_softmax(chunk_logits, chunk_index)
     for chunk_logits, chunk_index in zip(chunked_logits, chunked_index):
         chunk_logits = chunk_logits.to(torch.float32)
+        if temperature != 1.0:
+            chunk_logits = chunk_logits / temperature
         selected_logits = torch.gather(chunk_logits, dim = -1, index = chunk_index.unsqueeze(-1)).squeeze(-1)
         logsumexp_values = torch.logsumexp(chunk_logits, dim = -1)
         per_token_logps = selected_logits - logsumexp_values
@@ -260,6 +279,29 @@ def align_logprobs_with_mask(
     padded_logprobs[valid_rows, valid_cols] = valid_vals
 
     return padded_logprobs
+
+def align_completion_tool_mask(
+    tool_mask: torch.Tensor,
+    completion_mask: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Aligns a raw completion-length tool/env mask with Unsloth's repacked loss mask.
+    """
+    if tool_mask is None:
+        return completion_mask
+    if tool_mask.shape[0] != completion_mask.shape[0]:
+        raise ValueError("tool_mask batch size must match completion_mask batch size.")
+
+    tool_mask = tool_mask.to(device=completion_mask.device)
+    if tool_mask.shape == completion_mask.shape:
+        aligned_tool_mask = tool_mask
+    else:
+        aligned_tool_mask = align_logprobs_with_mask(
+            tool_mask,
+            completion_mask,
+            pad_value=0,
+        )
+    return completion_mask * aligned_tool_mask.to(dtype=completion_mask.dtype)
 
 def autotune_batch_and_chunks(
     total_input_rows,
@@ -406,7 +448,7 @@ Parameters:
         eval_delay = 0,
         torch_empty_cache_steps = 250,
         learning_rate = 5e-05,
-        weight_decay = 0.01,
+        weight_decay = 0.001,
         adam_beta1 = 0.9,
         adam_beta2 = 0.999,
         adam_epsilon = 1e-08,
@@ -535,8 +577,8 @@ Parameters:
         dataset_num_proc = None,
         vllm_sampling_params = None,
         unsloth_num_chunks = -1,
-        unsloth_logit_chunk_multiplier = None, 
-        unsloth_grpo_mini_batch = None, 
+        unsloth_logit_chunk_multiplier = None,
+        unsloth_grpo_mini_batch = None,
         max_seq_length = None,
         **kwargs,
     ):
@@ -548,14 +590,15 @@ Parameters:
             output_dir = 'unsloth_training_checkpoints'
             save_strategy = 'no'
         import multiprocessing as _mp
-        if _mp.get_start_method() != 'fork':
-            dataset_num_proc = None
-        elif dataset_num_proc is None:
-            import psutil
-            dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)
-            memory_gb_left = psutil.virtual_memory().available / (1024**3)
-            if memory_gb_left <= 2: dataset_num_proc = 1
-            else: dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))
+        if dataset_num_proc is None:
+            if _mp.get_start_method() != 'fork':
+                dataset_num_proc = None
+            else:
+                import psutil
+                dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)
+                memory_gb_left = psutil.virtual_memory().available / (1024**3)
+                if memory_gb_left <= 2: dataset_num_proc = 1
+                else: dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))
         
         super().__init__(
             output_dir = output_dir,
@@ -918,7 +961,7 @@ class _UnslothORPOTrainer(BaseTrainer):
 
         if data_collator is None:
             data_collator = DPODataCollatorWithPadding(
-                pad_token_id=processing_class.pad_token_id,
+                pad_token_id=(getattr(processing_class, 'pad_token_id', None) if getattr(processing_class, 'pad_token_id', None) is not None else getattr(getattr(processing_class, 'tokenizer', None), 'pad_token_id', None)),
                 label_pad_token_id=args.label_pad_token_id,
                 is_encoder_decoder=self.is_encoder_decoder,
             )
@@ -942,7 +985,7 @@ class _UnslothORPOTrainer(BaseTrainer):
         self.max_length = max_length
         self.generate_during_eval = args.generate_during_eval
         self.label_pad_token_id = args.label_pad_token_id
-        self.padding_value = args.padding_value if args.padding_value is not None else processing_class.pad_token_id
+        self.padding_value = args.padding_value if args.padding_value is not None else (getattr(processing_class, 'pad_token_id', None) if getattr(processing_class, 'pad_token_id', None) is not None else getattr(getattr(processing_class, 'tokenizer', None), 'pad_token_id', None))
         self.max_prompt_length = max_prompt_length
         self.truncation_mode = args.truncation_mode
         self.processing_class = processing_class
@@ -1022,8 +1065,9 @@ class _UnslothORPOTrainer(BaseTrainer):
             https://github.com/EleutherAI/lm-evaluation-harness/pull/531#issuecomment-1595586257
         """
 
-        full_tokenized = self.processing_class(prompt + answer, add_special_tokens=False)
-        prompt_input_ids = self.processing_class(prompt, add_special_tokens=False)["input_ids"]
+        tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)
+        full_tokenized = tokenizer(prompt + answer, add_special_tokens=False)
+        prompt_input_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
 
         answer_input_ids = full_tokenized["input_ids"][len(prompt_input_ids) :]
         answer_attention_mask = full_tokenized["attention_mask"][len(prompt_input_ids) :]
@@ -1075,6 +1119,7 @@ class _UnslothORPOTrainer(BaseTrainer):
         of the prompt and the chosen/rejected response, with label_pad_token_id for the prompt tokens.
         """
         batch = {}
+        tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)
         prompt = feature["prompt"]
         chosen = feature["chosen"]
         rejected = feature["rejected"]
@@ -1087,7 +1132,7 @@ class _UnslothORPOTrainer(BaseTrainer):
 
             if not isinstance(prompt, str):
                 raise ValueError(f"prompt should be an str but got {type(prompt)}")
-            prompt_tokens = self.processing_class(prompt, add_special_tokens=False)
+            prompt_tokens = tokenizer(prompt, add_special_tokens=False)
             prompt_tokens = {f"prompt_{k}": v for k, v in prompt_tokens.items()}
 
             if not isinstance(chosen, str):
@@ -1123,7 +1168,7 @@ class _UnslothORPOTrainer(BaseTrainer):
 
             # add BOS token to head of prompt. Avoid adding if it's already there
             prompt_tokens, chosen_tokens, rejected_tokens = add_bos_token_if_needed(
-                self.processing_class.bos_token_id,
+                tokenizer.bos_token_id,
                 prompt_len_input_ids,
                 prompt_tokens,
                 chosen_prompt_len_input_ids,
@@ -1134,7 +1179,7 @@ class _UnslothORPOTrainer(BaseTrainer):
 
             # add EOS token to end of answer. Avoid adding if it's already there
             chosen_tokens, rejected_tokens = add_eos_token_if_needed(
-                self.processing_class.eos_token_id, chosen_tokens, rejected_tokens
+                tokenizer.eos_token_id, chosen_tokens, rejected_tokens
             )
 
             longer_response_length = max(len(chosen_tokens["input_ids"]), len(rejected_tokens["input_ids"]))
@@ -1184,13 +1229,13 @@ class _UnslothORPOTrainer(BaseTrainer):
                     batch[f"{k}{type_key}"] = tokens
 
         else:
-            chosen_tokens = self.processing_class(
+            chosen_tokens = tokenizer(
                 chosen, truncation=True, max_length=self.max_completion_length, add_special_tokens=True
             )
-            rejected_tokens = self.processing_class(
+            rejected_tokens = tokenizer(
                 rejected, truncation=True, max_length=self.max_completion_length, add_special_tokens=True
             )
-            prompt_tokens = self.processing_class(
+            prompt_tokens = tokenizer(
                 prompt, truncation=True, max_length=self.max_prompt_length, add_special_tokens=True
             )
 
@@ -1871,7 +1916,7 @@ Args:
                         __tokenizer.tokenizer,
                         pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),
                     )
-                else:
+                elif isinstance(data_collator, TransformersDataCollatorForLanguageModeling):
                     data_collator = TransformersDataCollatorForLanguageModeling(
                         __tokenizer.tokenizer,
                         mlm = False,

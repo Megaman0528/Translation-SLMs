@@ -1,0 +1,8 @@
+
+FROM llama-2-7b-chat.Q4_K_M.gguf
+TEMPLATE """[INST] <<SYS>>{{ .System }}<</SYS>>
+
+{{ .Prompt }} [/INST]"""
+PARAMETER stop "</s>"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
