@@ -1,0 +1,15 @@
+# 1. THE BASE (Points to your Unsloth export)
+FROM ./mistral-7b.Q4_K_M.gguf
+
+TEMPLATE """[INST] <<SYS>>
+{{ .System }}
+<</SYS>>
+
+Translate this Spanish text to English: {{ .Prompt }} [/INST]"""
+
+PARAMETER temperature 0
+PARAMETER num_ctx 4096
+# Llama-2 uses </s> as the end of string token
+PARAMETER stop "</s>"
+
+SYSTEM "You are a professional Spanish to English translator. Provide only the English translation, no explanations."
